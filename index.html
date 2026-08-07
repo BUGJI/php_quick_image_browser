@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>素材库 · 快速导入</title>
+    <link rel="stylesheet" href="css/base.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/variables.css">
+</head>
+<body>
+    <button class="menu-toggle" onclick="toggleSidebar()">☰</button>
+
+    <div class="app">
+        <div class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>📁 图片目录</h2>
+                <input type="text" id="folderFilter" placeholder="筛选文件夹...">
+            </div>
+            <div class="folder-tree" id="folderTree">
+                <div class="folder-loading"><div class="spinner"></div><div>加载目录...</div></div>
+            </div>
+            <div class="cache-info" id="cacheInfo">
+                <span id="cacheUpdatedAt">📦 上次更新: --</span>
+                <span onclick="clearCacheAndReload()">清除缓存</span>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="toolbar">
+                <div class="current-path" id="currentPath">/</div>
+                <button class="btn btn-icon theme-toggle" id="themeToggle" title="切换亮色/暗色主题">🌓</button>
+                <div class="toolbar-right">
+                    <span class="connection-status">
+                        <span class="status-dot offline" id="statusDot"></span>
+                        <span id="statusText">离线</span>
+                    </span>
+                    <input type="number" class="port-input" id="portInput" value="8080" min="1" max="65535" placeholder="端口">
+                    <button class="connect-btn" id="connectBtn">🔗 连接</button>
+                    <div class="quick-toggle" id="quickToggle" onclick="toggleQuickImport()">
+                        <span class="label">⚡快速导入</span>
+                        <span class="track"><span class="thumb"></span></span>
+                    </div>
+                    <span id="imageCount" class="image-count"></span>
+                    <input type="range" id="zoomSlider" min="0.5" max="7" step="0.1" value="1" style="width:80px">
+                    <input type="text" id="imageSearch" class="search-box" placeholder="搜索图片...">
+                    <button class="btn btn-icon" id="refreshBtn" title="刷新">🔄</button>
+                </div>
+            </div>
+
+            <div class="masonry-scroll" id="masonryScroll">
+                <div class="masonry-spacer" id="masonrySpacer"></div>
+                <div class="masonry-viewport" id="masonryViewport"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 灯箱 -->
+    <div class="lightbox" id="lightbox" onclick="closeLightboxOnBg(event)">
+        <button class="lightbox-close" onclick="closeLightbox()">&times;</button>
+        <button class="lightbox-nav lightbox-prev" onclick="event.stopPropagation();navLightbox(-1)">‹</button>
+        <button class="lightbox-nav lightbox-next" onclick="event.stopPropagation();navLightbox(1)">›</button>
+        <div class="lightbox-original-badge" id="lightboxBadge">📷 原图模式</div>
+        <div class="lightbox-loading-toast" id="lightboxLoadingToast" style="display: none;">
+            <div class="spinner-small"></div>
+            <span>加载原图中...</span>
+        </div>
+        <div class="zoom-hint" id="zoomHint">🖱️ 滚动滚轮缩放 | 双击重置</div>
+        <div class="lightbox-img-container" id="lightboxContainer">
+            <img class="lightbox-img" id="lightboxImg" src="" draggable="false">
+        </div>
+        <div class="lightbox-info" id="lightboxInfo"></div>
+        <button class="insert-btn" id="insertBtn">
+            <span class="icon">✨</span> 插入到谱面
+        </button>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script type="module" src="js/main.js"></script>
+</body>
+</html>

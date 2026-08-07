@@ -1,0 +1,23 @@
+# ===== 敏感配置：切勿提交 =====
+.env
+
+# ===== 运行时缓存（自动生成） =====
+.folder_tree_cache.json
+.images_meta_cache.json
+.name_index_cache.json
+
+# ===== WebDAV 同步状态（自动生成，含进度/清单/配置） =====
+.sync_state.json
+.sync_manifest.json
+.sync_config.json
+
+# ===== 环境检查工具（检查完删除，避免留在线上） =====
+check_environment.php
+
+# ===== 系统文件 =====
+.DS_Store
+Thumbs.db
+
+# ===== 日志/临时 =====
+*.log
+*.tmp

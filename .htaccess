@@ -1,0 +1,9 @@
+# 保护敏感文件不被直接访问
+<FilesMatch "^\.env|^\.env\.example|^env\.php$">
+    Require all denied
+</FilesMatch>
+
+# 缓存文件也不允许直接访问
+<FilesMatch "^\.(folder_tree_cache|images_meta_cache|name_index_cache)\.json$">
+    Require all denied
+</FilesMatch>
