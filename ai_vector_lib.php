@@ -44,8 +44,54 @@ function ai_config() {
         'time_budget'=> 45,   // 每批最长秒数（Web 轮询模式）
         'top_k'     => 50,    // 默认返回条数
         'cache_dir' => __DIR__ . '/webp_cache',
+        // AI 分类（三档：off=不启用 / realtime=实时 / cache=预生成索引）
+        'classify_mode'  => (string)($env['AI_CLASSIFY_MODE'] ?? 'off'),
+        'classify_top'   => max(1, (int)($env['AI_CLASSIFY_TOP'] ?? 200)),
+        'classify_min_score' => (float)($env['AI_CLASSIFY_MIN_SCORE'] ?? 0),
     ];
     return $cfg;
+}
+
+/** 读取 AI 分类类别清单（ai_categories.json）：['类别名' => '英文描述', ...] */
+function ai_categories() {
+    $f = __DIR__ . '/ai_categories.json';
+    if (!is_file($f)) return [];
+    $d = json_decode((string)@file_get_contents($f), true);
+    return is_array($d) ? $d : [];
+}
+
+// ============================================================
+// 查询词向量缓存（避免同一关键词反复调 txt2vec 触发频率限制）
+// ============================================================
+function ai_query_vec_cache_file() { return __DIR__ . '/.ai_query_cache.json'; }
+
+function ai_query_vec_cache_get($q) {
+    $f = ai_query_vec_cache_file();
+    if (!is_file($f)) return null;
+    $d = json_decode((string)@file_get_contents($f), true);
+    return (is_array($d) && isset($d[md5($q)])) ? $d[md5($q)] : null;
+}
+
+function ai_query_vec_cache_put($q, $vec) {
+    $f = ai_query_vec_cache_file();
+    $d = is_file($f) ? json_decode((string)@file_get_contents($f), true) : [];
+    if (!is_array($d)) $d = [];
+    $d[md5($q)] = $vec;
+    // 限制条数，防止无限增长（上限 500 条）
+    if (count($d) > 500) $d = array_slice($d, -500, 500, true);
+    @file_put_contents($f, json_encode($d, JSON_UNESCAPED_UNICODE));
+}
+
+/**
+ * txt2vec 带查询缓存：命中直接返回，未命中调服务并缓存。
+ * 分类类别的描述向量也可用此缓存（同一类别只调一次 txt2vec）。
+ */
+function ai_txt2vec_cached($cfg, $text) {
+    $cached = ai_query_vec_cache_get($text);
+    if ($cached) return ['ok' => true, 'vec' => $cached, 'cached' => true];
+    $r = ai_txt2vec($cfg, $text);
+    if (!empty($r['ok'])) ai_query_vec_cache_put($text, $r['vec']);
+    return $r;
 }
 
 // 向量化参与判断：webp_cache 里的文件是否属于图片
@@ -364,7 +410,7 @@ function ai_cosine($a, $b) {
  *   ['success'=>true, 'images'=>[['name','path','size','format'], ...], 'ai'=>true, 'scores'=>[...]]
  */
 function ai_search_images($cfg, $query, $topK = 50) {
-    $tv = ai_txt2vec($cfg, $query);
+    $tv = ai_txt2vec_cached($cfg, $query);
     if (!empty($tv['error'])) return ['success' => false, 'error' => $tv['error']];
     $store = ai_store($cfg);
     $hits = $store->topByCosine($tv['vec'], max(1, (int)$topK));
@@ -382,4 +428,157 @@ function ai_search_images($cfg, $query, $topK = 50) {
         $scores[] = round($h['score'], 4);
     }
     return ['success' => true, 'images' => $images, 'ai' => true, 'scores' => $scores];
+}
+
+// ============================================================
+// AI 分类（左侧 AI分类 虚拟文件夹）
+// 三档：off=不启用 / realtime=点击时实时算 topK / cache=预生成索引(推荐)
+// ============================================================
+function ai_classify_index_file() { return __DIR__ . '/.ai_categories_index.json'; }
+
+/** 实时模式：类别描述 → 文本向量 → 全库 topK（复用分批游标，秒级） */
+function ai_classify_realtime($cfg, $desc, $topK = 200, $minScore = 0) {
+    $tv = ai_txt2vec_cached($cfg, $desc);
+    if (!empty($tv['error'])) return ['success' => false, 'error' => $tv['error']];
+    $store = ai_store($cfg);
+    $hits = $store->topByCosine($tv['vec'], max(1, (int)$topK));
+    $images = [];
+    $scores = [];
+    foreach ($hits as $h) {
+        if ($minScore > 0 && $h['score'] < $minScore) continue;
+        $images[] = [
+            'name'   => basename($h['webpRel']),
+            'path'   => $h['webpRel'],
+            'size'   => $h['size'],
+            'format' => strtoupper(pathinfo($h['webpRel'], PATHINFO_EXTENSION)),
+        ];
+        $scores[] = round($h['score'], 4);
+    }
+    return ['success' => true, 'images' => $images, 'ai' => true, 'mode' => 'realtime', 'scores' => $scores];
+}
+
+/**
+ * 预生成分类索引（cache 模式）：对每个类别算 topK，结果存 .ai_categories_index.json。
+ * 增量逻辑：索引存在则只对「向量库中新增/变更」的图片重新分类（按 webpRel 集合差集），
+ * 删掉的图片自动从索引移除。
+ * 返回 ['ok'=>true, 'categories'=>n, 'images'=>n] 或 ['error'=>...]
+ */
+function ai_classify_build_index($cfg, $progress = null) {
+    $cats = ai_categories();
+    if (!$cats) return ['error' => 'ai_categories.json 为空或不存在'];
+
+    $store = ai_store($cfg);
+    $allVecs = [];
+    try { $allVecs = $store->all(); } catch (Throwable $e) { return ['error' => '读取向量库失败: ' . $e->getMessage()]; }
+    if (!$allVecs) return ['error' => '向量库为空，请先建立向量缓存'];
+
+    $idxFile = ai_classify_index_file();
+    $idx = is_file($idxFile) ? json_decode((string)@file_get_contents($idxFile), true) : [];
+    if (!is_array($idx)) $idx = [];
+    $old = $idx['categories'] ?? [];
+
+    // 现有向量库的 webpRel 集合；索引里对应图片集合
+    $vecKeys = array_keys($allVecs);
+    $idxKeys = [];
+    foreach ($old as $c => $list) { foreach ($list as $im) { $idxKeys[$im['path']] = true; } }
+    $idxKeys = array_keys($idxKeys);
+
+    // 需要处理 = 向量库新增/变更（向量库行有 size/mtime，但索引只存了 path；简化：全量差集）
+    // 增量策略：向量库有而索引没有的 → 重新分类；索引有而向量库没有的 → 删除
+    $need = array_diff($vecKeys, $idxKeys);
+    $drop = array_diff($idxKeys, $vecKeys);
+
+    // 类别向量（带缓存，只需算一次）
+    $catVecs = [];
+    foreach ($cats as $name => $desc) {
+        $tv = ai_txt2vec_cached($cfg, $desc);
+        if (!empty($tv['ok'])) $catVecs[$name] = $tv['vec'];
+    }
+    if (!$catVecs) return ['error' => '类别文本向量化全部失败（检查向量服务）'];
+
+    $newIdx = [];
+    foreach ($cats as $name => $desc) {
+        if (!isset($catVecs[$name])) continue;
+        // 已有索引里保留仍有效的图片（未删除、且不是待重分类的）
+        $kept = [];
+        if (isset($old[$name])) {
+            foreach ($old[$name] as $im) {
+                if (in_array($im['path'], $drop, true)) continue;      // 向量库已删
+                if (in_array($im['path'], $need, true)) continue;      // 需要重新分类
+                $kept[] = $im;
+            }
+        }
+        $newIdx[$name] = $kept;
+    }
+    // 对新增/变更图片,每类都算一遍相似度,若进入 topK 则插入
+    if ($need) {
+        $hitsByCat = [];
+        foreach ($cats as $name => $desc) {
+            if (!isset($catVecs[$name])) continue;
+            $cand = [];
+            foreach ($need as $w) {
+                $score = ai_cosine($catVecs[$name], $allVecs[$w]['vec']);
+                $cand[] = ['path' => $w, 'origRel' => $allVecs[$w]['origRel'], 'size' => (int)($allVecs[$w]['size'] ?? 0), 'score' => round($score, 4)];
+            }
+            usort($cand, function ($a, $b) { return $b['score'] <=> $a['score']; });
+            $topN = array_slice($cand, 0, max(1, (int)$cfg['classify_top']));
+            $hitsByCat[$name] = $topN;
+        }
+        // 合并：保留旧的 + 按分数插入新的,再截断到 topK
+        $merge = [];
+        foreach ($cats as $name => $desc) {
+            if (!isset($catVecs[$name])) continue;
+            $merged = $newIdx[$name];
+            foreach (($hitsByCat[$name] ?? []) as $h) $merged[] = $h;
+            usort($merged, function ($a, $b) { return $b['score'] <=> $a['score']; });
+            $newIdx[$name] = array_slice($merged, 0, max(1, (int)$cfg['classify_top']));
+        }
+    }
+
+    $idx = [
+        'timestamp' => time(),
+        'mode' => 'cache',
+        'top' => max(1, (int)$cfg['classify_top']),
+        'categories' => $newIdx,
+    ];
+    @file_put_contents($idxFile, json_encode($idx, JSON_UNESCAPED_UNICODE));
+
+    return ['ok' => true, 'categories' => count($cats), 'images' => count($vecKeys), 'added' => count($need), 'removed' => count($drop)];
+}
+
+/** 按当前模式查询某分类（realtime=实时 / cache=读索引） */
+function ai_classify_query($cfg, $catName, $topK = 200) {
+    $cats = ai_categories();
+    if (!isset($cats[$catName])) return ['success' => false, 'error' => "未知分类: {$catName}"];
+    $desc = $cats[$catName];
+    $minScore = (float)$cfg['classify_min_score'];
+
+    if ($cfg['classify_mode'] === 'cache') {
+        $idxFile = ai_classify_index_file();
+        if (!is_file($idxFile)) return ['success' => false, 'error' => '分类索引未建立，请在后台生成'];
+        $idx = json_decode((string)@file_get_contents($idxFile), true);
+        $list = (is_array($idx) && isset($idx['categories'][$catName])) ? $idx['categories'][$catName] : [];
+        if (!$list) return ['success' => true, 'images' => [], 'ai' => true, 'mode' => 'cache'];
+        $images = [];
+        $scores = [];
+        foreach ($list as $h) {
+            if ($minScore > 0 && (float)($h['score'] ?? 0) < $minScore) continue;
+            $images[] = [
+                'name'   => basename($h['path']),
+                'path'   => $h['path'],
+                'size'   => (int)($h['size'] ?? 0),
+                'format' => strtoupper(pathinfo($h['path'], PATHINFO_EXTENSION)),
+            ];
+            $scores[] = (float)($h['score'] ?? 0);
+        }
+        return ['success' => true, 'images' => $images, 'ai' => true, 'mode' => 'cache', 'scores' => $scores];
+    }
+
+    // realtime
+    return ai_classify_realtime($cfg, $desc, max(1, (int)$topK), $minScore);
+}
+
+/** 分类模式是否启用（off 则不显示 AI 分类） */
+function ai_classify_enabled($cfg) {
+    return $cfg['classify_mode'] === 'realtime' || $cfg['classify_mode'] === 'cache';
 }

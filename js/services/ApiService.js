@@ -65,10 +65,18 @@ export class ApiService {
   }
 
   /** 搜索图片（useAi=true 走 AI 语义搜索，否则文件名搜索） */
-  async search(keyword, useAi = false) {
+  async search(keyword, useAi = false, signal) {
     const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINTS.SEARCH}&keyword=${encodeURIComponent(keyword)}${useAi ? '&ai=1' : ''}`;
-    const data = await this.#fetch(url);
+    const data = await this.#fetch(url, { signal });
     if (!data.success) throw new Error(data.error || '搜索失败');
+    return data.images;
+  }
+
+  /** AI 分类查询（虚拟文件夹） */
+  async aiCategory(cat, signal) {
+    const url = `${CONFIG.API_BASE}get_images.php?action=aiCategory&cat=${encodeURIComponent(cat)}`;
+    const data = await this.#fetch(url, { signal });
+    if (!data.success) throw new Error(data.error || '分类查询失败');
     return data.images;
   }
 

@@ -36,7 +36,7 @@ function ai_save_state($s) {
 }
 
 // ---------- Web 鉴权（CLI 跳过；search/status/test 公开） ----------
-$publicActions = ['search', 'status', 'test'];
+$publicActions = ['search', 'status', 'test', 'categories'];
 $action = $IS_CLI ? 'cli' : ($_GET['action'] ?? 'status');
 
 if (!$IS_CLI) {
@@ -81,6 +81,24 @@ if ($IS_CLI) {
         echo "✅ 向量库已清空\n";
         exit(0);
     }
+    if ($cmd === 'build-index') {
+        if (!ai_classify_enabled($cfg)) {
+            echo "❌ AI 分类未启用（.env 设置 AI_CLASSIFY_MODE=realtime 或 cache）\n";
+            exit(1);
+        }
+        echo "🔄 生成分类索引（cache 模式）…\n";
+        $r = ai_classify_build_index($cfg);
+        if (!empty($r['error'])) { echo "❌ " . $r['error'] . "\n"; exit(1); }
+        echo "✅ 分类索引完成: {$r['categories']} 类 · {$r['images']} 图 · 新增 {$r['added']} · 移除 {$r['removed']}\n";
+        exit(0);
+    }
+    if ($cmd === 'categories') {
+        $cats = ai_categories();
+        if (!$cats) { echo "❌ ai_categories.json 为空\n"; exit(1); }
+        echo "分类清单 (" . count($cats) . " 类):\n";
+        foreach ($cats as $name => $desc) echo "  - {$name}: {$desc}\n";
+        exit(0);
+    }
     if ($cmd === 'test') {
         $mode = $argv[2] ?? 'img';
         if ($mode === 'txt') {
@@ -122,6 +140,32 @@ if ($action === 'search') {
     if ($q === '') { echo json_encode(['success' => false, 'error' => '缺少查询词 q'], JSON_UNESCAPED_UNICODE); exit; }
     $top = isset($_GET['top']) ? (int)$_GET['top'] : $cfg['top_k'];
     echo json_encode(ai_search_images($cfg, $q, $top), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ---------- 分类清单（公开，只含名称） ----------
+if ($action === 'categories') {
+    $cats = ai_categories();
+    echo json_encode(['ok' => true, 'categories' => array_map(function ($name) { return ['name' => $name]; }, array_keys($cats))], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// ---------- 构建分类索引（需要 admin 登录，非公开） ----------
+if ($action === 'buildIndex') {
+    if (session_status() === PHP_SESSION_NONE) session_start();
+    if (empty($_SESSION['admin_authed'])) {
+        echo json_encode(['error' => '未登录'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    if (!ai_classify_enabled($cfg)) {
+        echo json_encode(['error' => 'AI 分类未启用（.env 的 AI_CLASSIFY_MODE=realtime 或 cache）'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    // 分类索引构建可能较久，提升内存/时间
+    @ini_set('memory_limit', '512M');
+    @set_time_limit(0);
+    $r = ai_classify_build_index($cfg);
+    echo json_encode($r, JSON_UNESCAPED_UNICODE);
     exit;
 }
 

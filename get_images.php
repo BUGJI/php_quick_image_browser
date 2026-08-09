@@ -189,6 +189,37 @@ function writeMetaCache($file, $data) {
     @file_put_contents($file, json_encode($data));
 }
 
+/**
+ * AI 分类虚拟树节点（mode=off 返回空数组；实时注入，不进目录树缓存文件）
+ */
+function aiClassifyTreeNodes() {
+    if (!is_file(__DIR__ . '/ai_vector_lib.php')) return [];
+    require_once __DIR__ . '/ai_vector_lib.php';
+    $cfg = ai_config();
+    if (!ai_classify_enabled($cfg)) return [];
+    $cats = ai_categories();
+    if (!$cats) return [];
+    $children = [];
+    foreach ($cats as $name => $desc) {
+        $children[] = [
+            'name' => $name,
+            'path' => '__ai_cat__' . $name,
+            'type' => 'folder',
+            'children' => [],
+            'imageCount' => 0,
+            'aiCategory' => true,
+        ];
+    }
+    return [[
+        'name' => 'AI分类',
+        'path' => '__ai_cat_root__',
+        'type' => 'folder',
+        'children' => $children,
+        'imageCount' => 0,
+        'aiCategoryRoot' => true,
+    ]];
+}
+
 $action = isset($_GET['action']) ? $_GET['action'] : '';
 
 if ($action === 'getTree') {
@@ -198,9 +229,13 @@ if ($action === 'getTree') {
         $cached = readCacheFile($treeCacheFile, $treeCacheTtl);
         // 旧版缓存可能包含文件节点（体积巨大），检测到则自动重建精简版
         if ($cached !== null && isset($cached['data']) && !treeHasFiles($cached['data'])) {
+            $tree = $cached['data'];
+            // 动态注入 AI 分类虚拟节点
+            $aiNodes = aiClassifyTreeNodes();
+            if ($aiNodes) $tree = array_merge($aiNodes, $tree);
             echo json_encode([
                 'success' => true,
-                'tree' => $cached['data'],
+                'tree' => $tree,
                 'cached' => true,
                 'timestamp' => $cached['timestamp']
             ]);
@@ -211,12 +246,38 @@ if ($action === 'getTree') {
     $built = buildFolderTree($cacheDir, $cacheDir);
     $tree = $built['children'];
     writeCacheFile($treeCacheFile, $tree);
+    $aiNodes = aiClassifyTreeNodes();
+    if ($aiNodes) $tree = array_merge($aiNodes, $tree);
     echo json_encode([
         'success' => true,
         'tree' => $tree,
         'cached' => false,
         'timestamp' => time()
     ]);
+
+} elseif ($action === 'aiCategory') {
+    // AI 分类查询（公开）：cat=分类名&top=N
+    if (!is_file(__DIR__ . '/ai_vector_lib.php')) {
+        echo json_encode(['success' => false, 'error' => 'AI 模块不存在'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    @ini_set('display_errors', '0');
+    @ini_set('log_errors', '1');
+    @ini_set('memory_limit', '512M');
+    require_once __DIR__ . '/ai_vector_lib.php';
+    $cfg = ai_config();
+    if (!ai_classify_enabled($cfg)) {
+        echo json_encode(['success' => false, 'error' => 'AI 分类未启用（.env 的 AI_CLASSIFY_MODE）'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    $cat = isset($_GET['cat']) ? (string)$_GET['cat'] : '';
+    $top = isset($_GET['top']) ? (int)$_GET['top'] : (int)$cfg['classify_top'];
+    if ($cat === '') {
+        echo json_encode(['success' => false, 'error' => '缺少分类名 cat'], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    echo json_encode(ai_classify_query($cfg, $cat, $top), JSON_UNESCAPED_UNICODE);
+    exit;
 
 } elseif ($action === 'getImages') {
     $folderPath = isset($_GET['path']) ? $_GET['path'] : '';
@@ -268,7 +329,7 @@ if ($action === 'getTree') {
             echo json_encode(['success' => false, 'error' => 'AI 搜索未启用（.env 的 AI_SEARCH_ENABLED）'], JSON_UNESCAPED_UNICODE);
             exit;
         }
-        $top = isset($_GET['top']) ? (int)$_GET['top'] : 50;
+        $top = isset($_GET['top']) ? (int)$_GET['top'] : 2000;
         echo json_encode(ai_search_images($cfg, $keyword, $top), JSON_UNESCAPED_UNICODE);
         exit;
     }

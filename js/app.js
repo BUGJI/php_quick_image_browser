@@ -81,7 +81,15 @@ async init() {
 
     // 搜索
     const $search = document.getElementById('imageSearch');
-    $search.addEventListener('input', debounce(() => this.search($search.value), 300));
+    $search.addEventListener('input', debounce(() => {
+      if (!$search.value.trim()) {
+        // 清空搜索框：取消未完成的搜索请求，回到当前文件夹
+        this.cancelSearch();
+        this.selectFolder(appStore.get('currentFolderPath'), appStore.get('currentFolderName'));
+      } else {
+        this.search($search.value);
+      }
+    }, 300));
     window.debouncedSearch = () => this.search($search.value);
 
     // 缩放
@@ -110,7 +118,14 @@ async init() {
   /** Store 事件订阅 */
   bindStoreEvents() {
     // 文件夹选择
-    eventBus.on(EVENTS.FOLDER_SELECTED, ({ path, name }) => this.selectFolder(path, name));
+    eventBus.on(EVENTS.FOLDER_SELECTED, ({ path, name }) => {
+      if (path && path.startsWith('__ai_cat__')) {
+        // AI 分类虚拟文件夹：去掉前缀后是分类名
+        this.selectAiCategory(path.slice('__ai_cat__'.length));
+      } else {
+        this.selectFolder(path, name);
+      }
+    });
 
     // 连接状态
     eventBus.on(EVENTS.CONNECTION_CHANGED, (connected) => this.onConnectionChange(connected));
@@ -150,7 +165,10 @@ async init() {
       eventBus.emit(EVENTS.FOLDER_TREE_LOADED, tree);
       this.updateCacheTime();
       if (tree.length && !appStore.get('currentFolderPath')) {
-        this.selectFolder(tree[0].path, tree[0].name);
+        // 自动选中第一个真实文件夹（跳过 AI 分类虚拟节点）
+        let first = tree[0];
+        if (first.path === '__ai_cat_root__' && tree[1]) first = tree[1];
+        this.selectFolder(first.path, first.name);
       }
     } catch (e) {
       this.showToast('目录加载失败', 'error');
@@ -267,10 +285,13 @@ async init() {
       if (path) await this.selectFolder(path, appStore.get('currentFolderName'));
       return;
     }
+    // 取消上一个搜索请求，避免旧任务残留（竞态）
+    if (this.searchController) this.searchController.abort();
+    this.searchController = new AbortController();
     try {
       const useAi = !!Storage.get(STORAGE_KEYS.AI_SEARCH);
       this.grid?.setSearchMode(true); // 搜索时隐藏 README
-      const images = await api.search(keyword, useAi);
+      const images = await api.search(keyword, useAi, this.searchController.signal);
       const processed = images.map(img => ({
         ...img,
         originalName: getOriginalName(img.name),
@@ -280,7 +301,47 @@ async init() {
       this.grid?.setImages(processed);
       this.showToast(`${processed.length} 张 (${useAi ? 'AI 搜索' : '搜索'})`, 'info');
     } catch (e) {
-      this.showToast(e.message || '搜索失败', 'error');
+      if (e.name !== 'AbortError') this.showToast(e.message || '搜索失败', 'error');
+    }
+  }
+
+  /** 取消未完成的搜索请求 */
+  cancelSearch() {
+    if (this.searchController) {
+      this.searchController.abort();
+      this.searchController = null;
+    }
+  }
+
+  /** AI 分类虚拟文件夹加载 */
+  async selectAiCategory(cat) {
+    // 取消上一个进行中的请求
+    if (this.currentFetchController) this.currentFetchController.abort();
+    this.currentFetchController = new AbortController();
+
+    appStore.setMultiple({ currentFolderPath: '__ai_cat__' + cat, currentFolderName: cat });
+    document.getElementById('currentPath').textContent = '🗂 ' + cat;
+    document.getElementById('imageSearch').value = '';
+    this.sidebar?.updateActive('__ai_cat__' + cat);
+    if (window.innerWidth <= 768) document.getElementById('sidebar').classList.remove('open');
+
+    // 退出搜索模式，隐藏 README
+    this.grid?.setSearchMode(true);
+    this.grid?.setLoading(true);
+    try {
+      const images = await api.aiCategory(cat, this.currentFetchController.signal);
+      const processed = images.map(img => ({
+        ...img,
+        originalName: getOriginalName(img.name),
+        sizeFormatted: formatSize(img.size)
+      }));
+      appStore.setMultiple({ images: processed, filteredImages: processed });
+      this.grid?.setImages(processed);
+      this.showToast(`${cat}: ${processed.length} 张`, 'info');
+    } catch (e) {
+      if (e.name !== 'AbortError') this.showToast('分类加载失败: ' + e.message, 'error');
+    } finally {
+      this.grid?.setLoading(false);
     }
   }
 

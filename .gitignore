@@ -17,6 +17,8 @@ webp_cache/
 # ===== AI 语义搜索（向量库/任务状态，自动生成） =====
 .ai_vectors.json
 .ai_state.json
+.ai_query_cache.json
+.ai_categories_index.json
 
 # ===== 环境检查工具（检查完删除，避免留在线上） =====
 check_environment.php

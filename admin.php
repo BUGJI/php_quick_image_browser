@@ -449,8 +449,25 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
         <br>🔹 <strong>增量</strong>：只处理新增/变化的图片，并把已删除的从库中移除（日常用）。
         <br>🔹 <strong>全量</strong>：清空后全部重新向量化（首次或换模型后用，耗时最长）。
         <br>🔹 也可 SSH 执行 <code>php ai_vector.php scan</code>（增量）或 <code>php ai_vector.php scan --full</code>（全量）一次性跑完。
-        <br>🔹 搜索：网站搜索框右侧开 <strong>🤖AI搜索</strong> 开关后输入关键词，按语义相似度返回 top-50。
+        <br>🔹 搜索：网站搜索框右侧开 <strong>🤖AI搜索</strong> 开关后输入关键词，按语义相似度返回结果（默认最多 2000 张）。
     </div>
+</div>
+
+<div class="card">
+    <h2>🗂 AI 分类 · 左侧虚拟文件夹</h2>
+    <div class="muted" style="margin-bottom:10px;">
+        模式由 <code>.env</code> 的 <code>AI_CLASSIFY_MODE</code> 控制：<strong>off</strong>=不启用（左侧不显示 AI分类）/ <strong>realtime</strong>=点击时实时计算 / <strong>cache</strong>=预生成索引（推荐，秒开）。
+        类别清单见 <code>ai_categories.json</code>（类别名 + 英文描述）。
+        <br>当前：<code id="cls_cfg_summary">加载中…</code>
+    </div>
+
+    <div style="margin-top:12px;">
+        <button class="btn btn-primary" id="btn_cls_build">⚙️ 生成分类索引</button>
+        <button class="btn btn-ghost" id="btn_cls_list">📋 查看类别</button>
+        <button class="btn btn-ghost" id="btn_cls_test">🔍 测试分类</button>
+    </div>
+
+    <div class="sync-msg" id="cls_msg"></div>
 </div>
 
 <script>
@@ -854,6 +871,43 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
     });
 
     aiRefresh();
+
+    // ================= AI 分类 · 左侧虚拟文件夹 =================
+    const clsMsg = (m, ok) => {
+        const el = $('cls_msg');
+        el.textContent = m;
+        el.className = 'sync-msg ' + (ok ? 'ok' : 'err');
+    };
+    document.getElementById('cls_cfg_summary').textContent =
+        '<?= h((string)($env['AI_CLASSIFY_MODE'] ?? 'off')) ?> · top=<?= h((string)($env['AI_CLASSIFY_TOP'] ?? '200')) ?>' +
+        ' · 类别数=<?= h((string)count(is_file(__DIR__ . "/ai_categories.json") ? json_decode((string)@file_get_contents(__DIR__ . "/ai_categories.json"), true) ?: [] : [])) ?>';
+    const clsMode = '<?= h((string)($env['AI_CLASSIFY_MODE'] ?? 'off')) ?>';
+
+    $('btn_cls_build').addEventListener('click', () => {
+        if (clsMode === 'off') { clsMsg('❌ 当前模式 off，未启用 AI 分类（改 .env 的 AI_CLASSIFY_MODE）', false); return; }
+        if (clsMode === 'realtime') { clsMsg('ℹ️ 当前是 realtime 模式，无需索引（点击分类时实时计算）', true); return; }
+        clsMsg('⚙️ 正在生成分类索引（cache 模式）…', true);
+        fetch('ai_vector.php?action=buildIndex').then(r => r.json()).then(d => {
+            if (d.ok) clsMsg('✅ 索引完成：' + d.categories + ' 类 · ' + d.images + ' 图 · 新增 ' + d.added + ' · 移除 ' + d.removed, true);
+            else clsMsg('❌ ' + (d.error || '生成失败'), false);
+        }).catch(() => clsMsg('❌ 请求失败', false));
+    });
+    $('btn_cls_list').addEventListener('click', () => {
+        fetch('ai_vector.php?action=categories').then(r => r.json()).then(d => {
+            if (d.ok && d.categories) {
+                clsMsg('📋 ' + d.categories.map(c => c.name).join(' / '), true);
+            } else clsMsg('❌ ' + (d.error || '读取失败'), false);
+        }).catch(() => clsMsg('❌ 请求失败', false));
+    });
+    $('btn_cls_test').addEventListener('click', () => {
+        if (clsMode === 'off') { clsMsg('❌ 当前模式 off，未启用 AI 分类', false); return; }
+        clsMsg('🔍 正在测试第一个分类…', true);
+        fetch('get_images.php?action=aiCategory&cat=' + encodeURIComponent('天空云彩')).then(r => r.json()).then(d => {
+            if (d.success) clsMsg('✅ 「天空云彩」返回 ' + d.images.length + ' 张（' + (d.mode || '?') + ' 模式）', true);
+            else clsMsg('❌ ' + (d.error || '查询失败'), false);
+        }).catch(() => clsMsg('❌ 请求失败', false));
+    });
+
 })();
 </script>
 
