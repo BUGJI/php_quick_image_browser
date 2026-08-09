@@ -122,6 +122,34 @@ function buildNameIndex($dir, $baseDir) {
     return $images;
 }
 
+/**
+ * 搜索关键词匹配：支持通配符 *（任意多个字符）和 ?（单个字符）
+ * - 关键词含未转义的 * 或 ? 时：转换为正则做全名匹配（大小写不敏感）
+ * - 否则：保持原有「子串包含」匹配，兼容旧行为
+ * - 用反斜杠可转义字面量：\* 匹配星号本身，\? 匹配问号本身
+ */
+function matchSearchKeyword($name, $keyword) {
+    if (strpbrk($keyword, '*?') === false) {
+        return stripos($name, $keyword) !== false;
+    }
+    $pattern = '';
+    $len = strlen($keyword);
+    for ($i = 0; $i < $len; $i++) {
+        $ch = $keyword[$i];
+        if ($ch === '\\' && $i + 1 < $len && ($keyword[$i + 1] === '*' || $keyword[$i + 1] === '?')) {
+            // 转义的通配符：按字面量匹配
+            $pattern .= preg_quote($keyword[++$i], '/');
+        } elseif ($ch === '*') {
+            $pattern .= '.*';
+        } elseif ($ch === '?') {
+            $pattern .= '.';
+        } else {
+            $pattern .= preg_quote($ch, '/');
+        }
+    }
+    return preg_match('/^' . $pattern . '$/iu', $name) === 1;
+}
+
 function formatFileSize($bytes) {
     if ($bytes >= 1073741824) {
         return number_format($bytes / 1073741824, 2) . ' GB';
@@ -253,7 +281,7 @@ if ($action === 'getTree') {
 
     if ($keyword) {
         $filtered = array_filter($allImages, function($img) use ($keyword) {
-            return stripos($img['name'], $keyword) !== false;
+            return matchSearchKeyword($img['name'], $keyword);
         });
         $allImages = array_values($filtered);
     }
