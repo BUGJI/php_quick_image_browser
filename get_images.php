@@ -258,6 +258,10 @@ if ($action === 'getTree') {
 
     // AI 语义搜索：向量库 + 余弦相似度（文件名搜索之外的新通道）
     if ($useAi) {
+        // 与 ai_vector.php 对齐：提升内存上限 + 关闭 display_errors，防止 HTML 污染 JSON
+        @ini_set('display_errors', '0');
+        @ini_set('log_errors', '1');
+        @ini_set('memory_limit', '512M');
         require_once __DIR__ . '/ai_vector_lib.php';
         $cfg = ai_config();
         if (!$cfg['enabled']) {

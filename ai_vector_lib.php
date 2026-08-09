@@ -85,6 +85,16 @@ class AiVectorStoreJson {
     }
     public function all() { return $this->read()['vectors'] ?? []; }
     public function get($key) { $d = $this->read(); return $d['vectors'][$key] ?? null; }
+    public function topByCosine($qvec, $topK) {
+        $rows = $this->read()['vectors'] ?? [];
+        $top = [];
+        foreach ($rows as $webpRel => $row) {
+            $score = ai_cosine($qvec, $row['vec']);
+            $top[] = ['webpRel' => $webpRel, 'origRel' => $row['origRel'], 'score' => $score, 'size' => (int)($row['size'] ?? 0)];
+        }
+        usort($top, function ($a, $b) { return $b['score'] <=> $a['score']; });
+        return array_slice($top, 0, max(1, (int)$topK));
+    }
     public function upsert($key, $row) {
         $d = $this->read();
         $d['vectors'][$key] = $row;
@@ -144,6 +154,31 @@ class AiVectorStoreMysql {
             $out[$r['webp_rel']] = ['origRel' => $r['orig_rel'], 'vec' => $vec, 'size' => (int)$r['size'], 'mtime' => (int)$r['mtime']];
         }
         return $out;
+    }
+    /**
+     * top-K 余弦搜索（分批游标读取，避免全表加载撑爆内存）。
+     * 返回 [['webpRel'=>, 'origRel'=>, 'score'=>, 'size'=>], ...] 按 score 降序。
+     */
+    public function topByCosine($qvec, $topK) {
+        $top = [];
+        $lastId = 0;
+        $batch = 500;
+        while (true) {
+            $st = $this->pdo->prepare('SELECT id, webp_rel, orig_rel, vec, size, mtime FROM ai_vectors WHERE id > ? ORDER BY id ASC LIMIT ' . (int)$batch);
+            $st->execute([$lastId]);
+            $rows = $st->fetchAll();
+            if (!$rows) break;
+            foreach ($rows as $r) {
+                $lastId = (int)$r['id'];
+                $vec = json_decode($r['vec'], true);
+                if (!is_array($vec)) continue;
+                $score = ai_cosine($qvec, $vec);
+                $top[] = ['webpRel' => $r['webp_rel'], 'origRel' => $r['orig_rel'], 'score' => $score, 'size' => (int)$r['size']];
+            }
+            if (count($rows) < $batch) break;
+        }
+        usort($top, function ($a, $b) { return $b['score'] <=> $a['score']; });
+        return array_slice($top, 0, max(1, (int)$topK));
     }
     public function get($key) {
         $st = $this->pdo->prepare('SELECT webp_rel, orig_rel, vec, size, mtime FROM ai_vectors WHERE webp_rel = ?');
@@ -332,16 +367,8 @@ function ai_search_images($cfg, $query, $topK = 50) {
     $tv = ai_txt2vec($cfg, $query);
     if (!empty($tv['error'])) return ['success' => false, 'error' => $tv['error']];
     $store = ai_store($cfg);
-    $rows = $store->all();
-    if (count($rows) === 0) return ['success' => false, 'error' => '向量库为空，请先建立向量缓存后再搜索'];
-
-    $hits = [];
-    foreach ($rows as $webpRel => $row) {
-        $score = ai_cosine($tv['vec'], $row['vec']);
-        $hits[] = ['webpRel' => $webpRel, 'origRel' => $row['origRel'], 'score' => $score, 'size' => (int)($row['size'] ?? 0)];
-    }
-    usort($hits, function ($a, $b) { return $b['score'] <=> $a['score']; });
-    $hits = array_slice($hits, 0, max(1, (int)$topK));
+    $hits = $store->topByCosine($tv['vec'], max(1, (int)$topK));
+    if (count($hits) === 0) return ['success' => false, 'error' => '向量库为空，请先建立向量缓存后再搜索'];
 
     $images = [];
     $scores = [];
