@@ -226,6 +226,20 @@ if ($action === 'getTree') {
 
 } elseif ($action === 'search') {
     $keyword = isset($_GET['keyword']) ? $_GET['keyword'] : '';
+    $useAi = isset($_GET['ai']) && $_GET['ai'] === '1';
+
+    // AI 语义搜索：向量库 + 余弦相似度（文件名搜索之外的新通道）
+    if ($useAi) {
+        require_once __DIR__ . '/ai_vector_lib.php';
+        $cfg = ai_config();
+        if (!$cfg['enabled']) {
+            echo json_encode(['success' => false, 'error' => 'AI 搜索未启用（.env 的 AI_SEARCH_ENABLED）'], JSON_UNESCAPED_UNICODE);
+            exit;
+        }
+        $top = isset($_GET['top']) ? (int)$_GET['top'] : 50;
+        echo json_encode(ai_search_images($cfg, $keyword, $top), JSON_UNESCAPED_UNICODE);
+        exit;
+    }
 
     // 轻量文件名索引缓存（只扫文件名，不做 getimagesize）
     $nameIndexFile = __DIR__ . '/.name_index_cache.json';

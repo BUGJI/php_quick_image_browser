@@ -6,10 +6,17 @@
 .images_meta_cache.json
 .name_index_cache.json
 
+# 同步生成的 webp 缩略图缓存目录
+webp_cache/
+
 # ===== WebDAV 同步状态（自动生成，含进度/清单/配置） =====
 .sync_state.json
 .sync_manifest.json
 .sync_config.json
+
+# ===== AI 语义搜索（向量库/任务状态，自动生成） =====
+.ai_vectors.json
+.ai_state.json
 
 # ===== 环境检查工具（检查完删除，避免留在线上） =====
 check_environment.php

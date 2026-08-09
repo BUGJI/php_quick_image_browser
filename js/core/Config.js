@@ -29,6 +29,7 @@ export const STORAGE_KEYS = {
   THEME: 'theme',
   LAST_PORT: 'last_port',
   CACHE_UPDATED_AT: 'cache_updated_at',
+  AI_SEARCH: 'ai_search_enabled',
 };
 
 export const CACHE_TTL = CONFIG.CACHE_TTL;

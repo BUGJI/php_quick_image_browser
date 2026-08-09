@@ -64,11 +64,12 @@ export class ApiService {
     throw new Error('加载图片失败: ' + (data.error || '未知错误'));
   }
 
-  /** 搜索图片 */
-  async search(keyword) {
-    const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINTS.SEARCH}&keyword=${encodeURIComponent(keyword)}`;
+  /** 搜索图片（useAi=true 走 AI 语义搜索，否则文件名搜索） */
+  async search(keyword, useAi = false) {
+    const url = `${CONFIG.API_BASE}${CONFIG.ENDPOINTS.SEARCH}&keyword=${encodeURIComponent(keyword)}${useAi ? '&ai=1' : ''}`;
     const data = await this.#fetch(url);
-    return data.success ? data.images : [];
+    if (!data.success) throw new Error(data.error || '搜索失败');
+    return data.images;
   }
 
   /** 健康检查 */

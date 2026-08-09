@@ -412,6 +412,47 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
     </div>
 </div>
 
+<div class="card">
+    <h2>🤖 AI 语义搜索 · 向量缓存</h2>
+    <div class="muted" style="margin-bottom:10px;">
+        配置在 <code>.env</code>（<code>AI_BASE_URL</code> / <code>AI_API_KEY</code> / <code>AI_IMAGE_ROOT</code> / <code>AI_STORAGE</code> 等）。
+        建向量 = 遍历 <code>webp_cache</code> → 反推 NAS 原图路径（去掉 <code>.webp</code> 后缀 + 拼接 <code>AI_IMAGE_ROOT</code>）→ 调 <code>img2vec</code> → 存向量库。
+        <br>当前：<code id="ai_cfg_summary">加载中…</code> · 已存向量 <b id="ai_stored">--</b>
+    </div>
+
+    <div style="margin-top:12px;">
+        <button class="btn btn-primary" id="btn_ai_start">▶ 增量建向量</button>
+        <button class="btn btn-danger" id="btn_ai_full">⏺ 全量建向量</button>
+        <button class="btn btn-danger" id="btn_ai_cancel" style="display:none;">⏹ 取消</button>
+        <button class="btn btn-ghost" id="btn_ai_clear">🗑️ 清空向量库</button>
+        <button class="btn btn-ghost" id="btn_ai_test">🔌 测试服务</button>
+    </div>
+
+    <div class="sync-msg" id="ai_msg"></div>
+
+    <div class="sync-progress" id="ai_progress" style="display:none;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;color:#94a3b8;">
+            <span id="ai_phase">初始化…</span>
+            <span id="ai_pct">0%</span>
+        </div>
+        <div class="sync-bar"><div id="ai_bar"></div></div>
+        <div class="sync-stats">
+            <span>✅ 成功 <b id="ai_ok">0</b></span>
+            <span>❌ 失败 <b id="ai_fail">0</b></span>
+            <span>🗑️ 移除 <b id="ai_removed">0</b></span>
+            <span>📚 库内 <b id="ai_stored2">0</b></span>
+        </div>
+    </div>
+
+    <div class="tip">
+        💡 <strong>说明：</strong>建向量同样采用<strong>前端分批轮询</strong>方式，<strong>期间请勿关闭本页面</strong>；中途可刷新后点「▶ 增量建向量」继续（断点续传）。
+        <br>🔹 <strong>增量</strong>：只处理新增/变化的图片，并把已删除的从库中移除（日常用）。
+        <br>🔹 <strong>全量</strong>：清空后全部重新向量化（首次或换模型后用，耗时最长）。
+        <br>🔹 也可 SSH 执行 <code>php ai_vector.php scan</code>（增量）或 <code>php ai_vector.php scan --full</code>（全量）一次性跑完。
+        <br>🔹 搜索：网站搜索框右侧开 <strong>🤖AI搜索</strong> 开关后输入关键词，按语义相似度返回 top-50。
+    </div>
+</div>
+
 <script>
 (function () {
     const $ = id => document.getElementById(id);
@@ -703,6 +744,116 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
                 else setMsg('❌ ' + (d.error || '保存失败'), false);
             });
     });
+
+    // ================= AI 语义搜索 · 向量缓存 =================
+    let aiRunning = false, aiTimer = null;
+
+    function aiMsg(text, ok) {
+        const el = $('ai_msg');
+        el.textContent = text;
+        el.className = 'sync-msg show ' + (ok ? 'msg ok' : 'msg err');
+    }
+
+    function aiRefresh() {
+        fetch('ai_vector.php?action=status').then(r => r.json()).then(d => {
+            if (d.error) { $('ai_stored').textContent = '--'; return; }
+            $('ai_stored').textContent = d.stored ?? '--';
+            $('ai_stored2').textContent = d.stored ?? '--';
+            if (d.phase && d.phase === 'running') {
+                $('ai_progress').style.display = '';
+                aiUpdateUI(d);
+                if (!aiRunning) { aiRunning = true; $('btn_ai_start').disabled = true; $('btn_ai_full').disabled = true; $('btn_ai_cancel').style.display = ''; aiPump(); }
+            } else if (d.phase === 'done' || d.phase === 'cancelled') {
+                $('btn_ai_start').disabled = false; $('btn_ai_full').disabled = false; $('btn_ai_cancel').style.display = 'none';
+                if (d.phase === 'done') aiMsg('✅ 向量化完成', true);
+            }
+        }).catch(() => {});
+    }
+
+    function aiStart(full) {
+        if (aiRunning) return;
+        aiRunning = true;
+        $('btn_ai_start').disabled = true;
+        $('btn_ai_full').disabled = true;
+        $('btn_ai_cancel').style.display = '';
+        $('ai_progress').style.display = '';
+        $('ai_msg').className = 'sync-msg';
+        aiMsg('', true);
+        fetch('ai_vector.php?action=scan' + (full ? '&full=1' : ''))
+            .then(r => r.json()).then(d => {
+                if (d.error) { aiMsg('❌ ' + d.error, false); aiStop(); return; }
+                aiMsg('📦 待向量化 ' + (d.pending_total || 0) + (d.removing ? ' · 待移除 ' + d.removing : '') + '，开始处理…', true);
+                aiPump();
+            }).catch(() => { aiMsg('❌ 建立任务失败', false); aiStop(); });
+    }
+
+    function aiPump() {
+        if (!aiRunning) return;
+        fetch('ai_vector.php?action=run')
+            .then(r => r.json()).then(d => {
+                if (d.error) { aiMsg('❌ ' + d.error, false); aiStop(); return; }
+                aiUpdateUI(d);
+                if (d.phase === 'done') {
+                    aiMsg('✅ 向量化完成！库内 ' + (d.stats && d.stats.success ? d.stats.success : 0) + ' 条（本次新增）', true);
+                    aiStop();
+                    aiRefresh();
+                    return;
+                }
+                if (d.phase === 'cancelled') { aiMsg('⏹ 已取消', false); aiStop(); aiRefresh(); return; }
+                aiTimer = setTimeout(aiPump, 500);
+            }).catch(() => {
+                aiTimer = setTimeout(aiPump, 3000);
+            });
+    }
+
+    function aiUpdateUI(d) {
+        $('ai_phase').textContent = d.phase === 'done' ? '完成' : (d.message || '处理中…');
+        $('ai_pct').textContent = (d.progress || 0) + '%';
+        $('ai_bar').style.width = (d.progress || 0) + '%';
+        $('ai_ok').textContent = (d.stats && d.stats.success) || 0;
+        $('ai_fail').textContent = (d.stats && d.stats.fail) || 0;
+        $('ai_removed').textContent = (d.stats && d.stats.removed) || 0;
+        $('ai_stored2').textContent = (d.stored || d.done_idx) || 0;
+    }
+
+    function aiStop() {
+        aiRunning = false;
+        $('btn_ai_start').disabled = false;
+        $('btn_ai_full').disabled = false;
+        $('btn_ai_cancel').style.display = 'none';
+        if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; }
+    }
+
+    // 配置摘要（只读展示关键项；不暴露 key）
+    document.getElementById('ai_cfg_summary').textContent = '<?= h(($env['AI_SEARCH_ENABLED'] ?? '') === 'true' ? '已启用' : '未启用') ?> · <?= h($env['AI_BASE_URL'] ?? '') ?> · storage=<?= h($env['AI_STORAGE'] ?? 'json') ?> · dim=<?= h($env['AI_DIM'] ?? '1024') ?>';
+
+    $('btn_ai_start').addEventListener('click', () => aiStart(false));
+    $('btn_ai_full').addEventListener('click', () => {
+        if (aiRunning) return;
+        if (!confirm('⚠️ 全量建向量会清空现有向量库并全部重新向量化。\n确定继续吗？')) return;
+        aiStart(true);
+    });
+    $('btn_ai_cancel').addEventListener('click', () => {
+        fetch('ai_vector.php?action=cancel').then(() => {
+            setTimeout(() => { if (aiTimer) { clearTimeout(aiTimer); aiTimer = null; } aiRefresh(); }, 2000);
+        });
+    });
+    $('btn_ai_clear').addEventListener('click', () => {
+        if (!confirm('确定清空全部向量缓存？')) return;
+        fetch('ai_vector.php?action=clear').then(r => r.json()).then(d => {
+            if (d.ok) { aiMsg('✅ 向量库已清空', true); $('ai_stored').textContent = '0'; $('ai_stored2').textContent = '0'; }
+            else aiMsg('❌ ' + (d.error || '清空失败'), false);
+        });
+    });
+    $('btn_ai_test').addEventListener('click', () => {
+        aiMsg('🔌 正在测试向量服务连通性…', true);
+        fetch('ai_vector.php?action=test&mode=img').then(r => r.json()).then(d => {
+            if (d.ok) aiMsg('✅ img2vec 正常（dim=' + d.dim + '）示例：' + (d.image || ''), true);
+            else aiMsg('❌ ' + (d.error || '服务不可用'), false);
+        }).catch(() => aiMsg('❌ 测试请求失败', false));
+    });
+
+    aiRefresh();
 })();
 </script>
 

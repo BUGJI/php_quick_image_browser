@@ -24,6 +24,7 @@
 - **全局模糊搜索** —— 按文件名搜索所有文件夹图片
 - **实时防抖** —— 300ms 防抖,输入即搜
 - **结果计数** —— 显示搜索结果数量
+- **🤖 AI 语义搜索** —— 搜索框右侧开关,按**内容含义**搜图(如「夕阳」「猫咪」「red dress」)。需先在管理面板建立向量缓存(见下节)
 
 ### 🔍 灯箱预览
 - **全屏查看** —— ESC/点击背景/关闭按钮关闭
@@ -69,6 +70,38 @@
 
 ---
 
+## 🤖 AI 语义搜索
+
+按图片**内容**搜索(而非文件名)。依赖 fnOS AI 管理器(飞牛相册同款 CLIP 模型)的 HTTP 服务,
+图文映射到同一 1024 维向量空间,搜索时把查询词向量化后做余弦相似度排序。
+
+### 原理(模式 1:NAS 本地路径,最经济)
+```
+webp_cache 里的 xxx.png.webp
+  → 去掉 .webp 后缀得到原图相对路径 xxx.png
+  → 拼接 AI_IMAGE_ROOT(/volX/1000/Resources/share/图片素材)
+  → 传给向量服务 img2vec(image_path) 直接读 NAS 本地文件,零传输成本
+```
+
+### 使用流程
+1. `.env` 配置 AI_* 项(见 `.env.example`),打开 `AI_SEARCH_ENABLED=true`
+2. 管理面板 `admin.php` → 「🤖 AI 语义搜索 · 向量缓存」→ 点「▶ 增量建向量」(首次用「⏺ 全量建向量」)
+3. 建完后网站搜索框右侧打开 **🤖AI搜索** 开关,输入关键词即可
+4. 也可 SSH 执行 `php ai_vector.php scan`(增量)/ `php ai_vector.php scan --full`(全量)
+
+### 向量存储
+- `AI_STORAGE=json`:本地 JSON 文件(`.ai_vectors.json`),适合单机/小库/测试
+- `AI_STORAGE=mysql`:云端 MySQL(生产)。表 `ai_vectors`(webp_rel 唯一键 + LONGTEXT 向量),首次运行自动建表
+
+### 三种图片输入模式(`AI_IMAGE_MODE`)
+| 模式 | 说明 | 适用 |
+|------|------|------|
+| `path` | 传 NAS 本地原图绝对路径(推荐) | 向量服务与图片同机/NAS 环境 |
+| `url` | 传图片公网 URL(需服务端开启 image_url 白名单) | 服务端可访问公网 |
+| `base64` | 传图片内容 | 最兼容但流量大、慢 |
+
+---
+
 ## 🏗️ 技术架构
 
 ### 后端
@@ -79,8 +112,10 @@
 | `serve_original.php` | 原图代理(去除 .webp 后缀,转发远程 WebDAV 原始格式,配置在 .env) |
 | `get_readme.php` | 文件夹 README 读取(支持 md/txt) |
 | `check_environment.php` | 环境检查工具(依赖/扩展/权限),检查完建议删除 |
-| `admin.php` | Admin 管理面板(缓存状态 + WebDAV 同步任务 + 远程目录黑名单) |
+| `admin.php` | Admin 管理面板(缓存状态 + WebDAV 同步任务 + 远程目录黑名单 + AI 向量缓存) |
 | `sync_webdav.php` | WebDAV 同步引擎(远程原图 → 本地 webp_cache,增量/全量) |
+| `ai_vector.php` | AI 向量缓存引擎 + 搜索接口(全量/增量建向量,CLI/Web 双模式) |
+| `ai_vector_lib.php` | AI 公共库(配置/双存储/路径反推/向量服务调用/余弦搜索) |
 | `env.php` | 轻量 .env 加载器 |
 | `.env` / `.env.example` | 环境配置(WebDAV 凭据、ADMIN_TOKEN),复制 example 为 .env 填写 |
 | `.htaccess` | 拦截 .env、缓存文件的直接访问(Apache 环境) |
@@ -201,6 +236,17 @@ export const CONFIG = {
 | `ADMIN_TOKEN` | Admin 面板管理口令 |
 | `SYNC_WHITELIST` / `SYNC_BLACKLIST` | 同步白/黑名单(优先级低于 admin 保存的配置) |
 | `SYNC_QUALITY` / `SYNC_MAX_WIDTH` / `SYNC_BATCH_SIZE` | 压缩质量 / 最大宽度 / 每批数量 |
+| `AI_SEARCH_ENABLED` | AI 搜索总开关(true/false) |
+| `AI_BASE_URL` | 向量服务地址(本机 `http://127.0.0.1:46091`;云端经 FRP 映射后填映射地址) |
+| `AI_API_KEY` | 向量服务 API Key(Bearer 鉴权,可选) |
+| `AI_IMAGE_MODE` | 图片向量输入模式:`path`(默认,最省)/ `url` / `base64` |
+| `AI_IMAGE_ROOT` | NAS 原图根目录绝对路径(path 模式拼接用,如 `/vol4/1000/Resources/share/图片素材`) |
+| `AI_DIM` | 向量维度(默认 1024) |
+| `AI_IMAGE_EXTS` | 参与向量化的扩展名(默认 `png,jpg,jpeg,webp,gif`) |
+| `AI_STORAGE` | 向量存储:`json`(本地文件,测试)/ `mysql`(云端,生产) |
+| `AI_VECTOR_FILE` | JSON 模式存储文件(默认 `.ai_vectors.json`) |
+| `AI_MYSQL_HOST/PORT/DB/USER/PASS` | MySQL 模式连接信息 |
+| `AI_BATCH_SIZE` | 每批向量化图片数(前端轮询,默认 10) |
 
 ---
 

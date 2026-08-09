@@ -73,6 +73,12 @@ async init() {
     document.getElementById('quickToggle').onclick = () => this.toggleQuickImport();
     window.toggleQuickImport = () => this.toggleQuickImport();
 
+    // AI 搜索开关（状态持久化；默认关）
+    const aiEnabled = !!Storage.get(STORAGE_KEYS.AI_SEARCH);
+    document.getElementById('aiToggle').classList.toggle('active', aiEnabled);
+    document.getElementById('aiToggle').onclick = () => this.toggleAiSearch();
+    window.toggleAiSearch = () => this.toggleAiSearch();
+
     // 搜索
     const $search = document.getElementById('imageSearch');
     $search.addEventListener('input', debounce(() => this.search($search.value), 300));
@@ -262,8 +268,9 @@ async init() {
       return;
     }
     try {
+      const useAi = !!Storage.get(STORAGE_KEYS.AI_SEARCH);
       this.grid?.setSearchMode(true); // 搜索时隐藏 README
-      const images = await api.search(keyword);
+      const images = await api.search(keyword, useAi);
       const processed = images.map(img => ({
         ...img,
         originalName: getOriginalName(img.name),
@@ -271,8 +278,10 @@ async init() {
       }));
       appStore.set('filteredImages', processed);
       this.grid?.setImages(processed);
-      this.showToast(`${processed.length} 张 (搜索)`, 'info');
-    } catch { this.showToast('搜索失败', 'error'); }
+      this.showToast(`${processed.length} 张 (${useAi ? 'AI 搜索' : '搜索'})`, 'info');
+    } catch (e) {
+      this.showToast(e.message || '搜索失败', 'error');
+    }
   }
 
   /** 连接切换 */
@@ -309,6 +318,14 @@ async init() {
     appStore.set('quickImportEnabled', enabled);
     document.getElementById('quickToggle').classList.toggle('active', enabled);
     this.showToast(enabled ? '⚡ 快速导入已开启' : '快速导入已关闭', 'info');
+  }
+
+  /** AI 搜索开关 */
+  toggleAiSearch() {
+    const enabled = !Storage.get(STORAGE_KEYS.AI_SEARCH);
+    Storage.set(STORAGE_KEYS.AI_SEARCH, enabled);
+    document.getElementById('aiToggle').classList.toggle('active', enabled);
+    this.showToast(enabled ? '🤖 AI 语义搜索已开启' : 'AI 搜索已关闭', 'info');
   }
 
   /** 主题切换 */
