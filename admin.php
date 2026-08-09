@@ -123,7 +123,7 @@ if ($authed && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) 
                 break;
             case 'clear_all':
                 foreach (array_keys($cacheFiles) as $f) @unlink(__DIR__ . '/' . $f);
-                $actionMsg = '所有后端缓存已清空';
+                $actionMsg = '所有缓存已清空';
                 $actionOk = true;
                 break;
             case 'rebuild_tree':
@@ -281,7 +281,7 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
 <div class="main">
 
 <h1>🛠️ Admin 面板</h1>
-<div class="sub">图片浏览器 · 后端缓存管理 &amp; WebDAV 同步</div>
+<div class="sub">图片浏览器 · 缓存管理 &amp; WebDAV 同步</div>
 
 <?php if ($actionMsg): ?>
 <div class="msg <?= $actionOk ? 'ok' : 'err' ?>"><?= h($actionMsg) ?></div>
@@ -320,7 +320,7 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
         <?php endforeach; ?>
     </table>
     <div class="tip">
-        💡 <strong>缓存机制：</strong>前端「清除缓存」只清 localStorage，后端缓存默认 30 天 TTL。
+        💡 <strong>缓存机制：</strong>浏览器「清除缓存」只清本地存储，服务端缓存默认 30 天 TTL。
         当你修改/增删了 webp_cache 里的图片后，用下方按钮强制重建对应缓存即可立即生效。
     </div>
 </div>
@@ -342,7 +342,7 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
         <input type="hidden" name="csrf" value="<?= h($csrfToken) ?>">
         <button type="submit" class="btn btn-ghost">🗑️ 清空搜索索引</button>
     </form>
-    <form method="post" style="display:inline" onsubmit="return confirm('确定清空全部后端缓存？')">
+    <form method="post" style="display:inline" onsubmit="return confirm('确定清空全部缓存？')">
         <input type="hidden" name="action" value="clear_all">
         <input type="hidden" name="csrf" value="<?= h($csrfToken) ?>">
         <button type="submit" class="btn btn-danger">🧹 清空全部</button>
@@ -404,7 +404,7 @@ th{color:#94a3b8;font-weight:600;font-size:12px;}
     </div>
 
     <div class="tip">
-        💡 <strong>同步说明：</strong>同步采用<strong>前端分批轮询</strong>方式（受限于服务器禁用后台进程），
+        💡 <strong>同步说明：</strong>同步采用<strong>前端分批轮询</strong>方式（受限于服务器环境），
         <strong>转换期间请勿关闭本页面</strong>。中途刷新/关闭可稍后重新打开本页点「▶ 增量同步」继续（自动断点续传）。
         <br>🔹 <strong>增量同步</strong>：只拉取新增/变化的文件（推荐日常使用）。
         <br>🔹 <strong>全量同步</strong>：忽略已同步记录，重新下载压缩全部文件（首次部署或想重压时用，耗时最长）。

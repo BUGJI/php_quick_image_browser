@@ -333,7 +333,7 @@ function ai_search_images($cfg, $query, $topK = 50) {
     if (!empty($tv['error'])) return ['success' => false, 'error' => $tv['error']];
     $store = ai_store($cfg);
     $rows = $store->all();
-    if (count($rows) === 0) return ['success' => false, 'error' => '向量库为空，请先在后台建立向量缓存'];
+    if (count($rows) === 0) return ['success' => false, 'error' => '向量库为空，请先建立向量缓存后再搜索'];
 
     $hits = [];
     foreach ($rows as $webpRel => $row) {
