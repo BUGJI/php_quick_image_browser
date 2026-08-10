@@ -87,6 +87,8 @@ if ($IS_CLI) {
             exit(1);
         }
         echo "🔄 生成分类索引（cache 模式）…\n";
+        @ini_set('memory_limit', '1024M');
+        @set_time_limit(0);
         $r = ai_classify_build_index($cfg);
         if (!empty($r['error'])) { echo "❌ " . $r['error'] . "\n"; exit(1); }
         echo "✅ 分类索引完成: {$r['categories']} 类 · {$r['images']} 图 · 新增 {$r['added']} · 移除 {$r['removed']}\n";

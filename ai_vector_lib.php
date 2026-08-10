@@ -131,6 +131,15 @@ class AiVectorStoreJson {
     }
     public function all() { return $this->read()['vectors'] ?? []; }
     public function get($key) { $d = $this->read(); return $d['vectors'][$key] ?? null; }
+    /** 轻量获取全部键（不加载 vec，避免内存峰值） */
+    public function keys() { return array_keys($this->read()['vectors'] ?? []); }
+    /**
+     * 分批遍历所有向量行（每批回调 ['webpRel'=>row,...]）。
+     * JSON 文件本身需整体解码，一次性回调（适合小库）；MySQL 分批游标。
+     */
+    public function eachBatch($batchSize, $cb) {
+        $cb($this->read()['vectors'] ?? []);
+    }
     public function topByCosine($qvec, $topK) {
         $rows = $this->read()['vectors'] ?? [];
         $top = [];
@@ -200,6 +209,33 @@ class AiVectorStoreMysql {
             $out[$r['webp_rel']] = ['origRel' => $r['orig_rel'], 'vec' => $vec, 'size' => (int)$r['size'], 'mtime' => (int)$r['mtime']];
         }
         return $out;
+    }
+    /** 轻量获取全部键（SELECT 仅 webp_rel，内存占用小） */
+    public function keys() {
+        $out = [];
+        $st = $this->pdo->query('SELECT webp_rel FROM ai_vectors');
+        foreach ($st as $r) $out[] = $r['webp_rel'];
+        return $out;
+    }
+    /** 分批游标遍历向量行（按 id 升序每批 batchSize 条），内存只与批次大小相关 */
+    public function eachBatch($batchSize, $cb) {
+        $lastId = 0;
+        $batch = max(1, (int)$batchSize);
+        while (true) {
+            $st = $this->pdo->prepare('SELECT id, webp_rel, orig_rel, vec, size, mtime FROM ai_vectors WHERE id > ? ORDER BY id ASC LIMIT ' . $batch);
+            $st->execute([$lastId]);
+            $rows = $st->fetchAll();
+            if (!$rows) break;
+            $out = [];
+            foreach ($rows as $r) {
+                $lastId = (int)$r['id'];
+                $vec = json_decode($r['vec'], true);
+                if (!is_array($vec)) continue;
+                $out[$r['webp_rel']] = ['origRel' => $r['orig_rel'], 'vec' => $vec, 'size' => (int)$r['size'], 'mtime' => (int)$r['mtime']];
+            }
+            $cb($out);
+            if (count($rows) < $batch) break;
+        }
     }
     /**
      * top-K 余弦搜索（分批游标读取，避免全表加载撑爆内存）。
@@ -459,8 +495,12 @@ function ai_classify_realtime($cfg, $desc, $topK = 200, $minScore = 0) {
 
 /**
  * 预生成分类索引（cache 模式）：对每个类别算 topK，结果存 .ai_categories_index.json。
- * 增量逻辑：索引存在则只对「向量库中新增/变更」的图片重新分类（按 webpRel 集合差集），
- * 删掉的图片自动从索引移除。
+ * 增量逻辑：索引文件里保存上次构建时向量库的完整 key 集合（keys 字段），
+ * 下次只对「向量库新增/变更」的图片重新分类，删掉的图片自动移除。
+ * （不能以 topK 条目做 diff：topK 只含每类前 N 名，索引里没有不等于没处理过。）
+ * 旧版索引无 keys 字段时降级为全量重建。
+ * 内存安全：MySQL 模式分批游标读取（eachBatch），每批最多 $batch 条向量，
+ * 同时每类只保留 topK 条，内存与向量总数无关。
  * 返回 ['ok'=>true, 'categories'=>n, 'images'=>n] 或 ['error'=>...]
  */
 function ai_classify_build_index($cfg, $progress = null) {
@@ -468,25 +508,28 @@ function ai_classify_build_index($cfg, $progress = null) {
     if (!$cats) return ['error' => 'ai_categories.json 为空或不存在'];
 
     $store = ai_store($cfg);
-    $allVecs = [];
-    try { $allVecs = $store->all(); } catch (Throwable $e) { return ['error' => '读取向量库失败: ' . $e->getMessage()]; }
-    if (!$allVecs) return ['error' => '向量库为空，请先建立向量缓存'];
+
+    // 轻量获取全部键（不加载 vec，内存小）
+    try { $vecKeys = $store->keys(); }
+    catch (Throwable $e) { return ['error' => '读取向量库失败: ' . $e->getMessage()]; }
+    if (!$vecKeys) return ['error' => '向量库为空，请先建立向量缓存'];
 
     $idxFile = ai_classify_index_file();
     $idx = is_file($idxFile) ? json_decode((string)@file_get_contents($idxFile), true) : [];
     if (!is_array($idx)) $idx = [];
     $old = $idx['categories'] ?? [];
+    $oldKeys = $idx['keys'] ?? null;   // 上次构建时的完整 key 集合
 
-    // 现有向量库的 webpRel 集合；索引里对应图片集合
-    $vecKeys = array_keys($allVecs);
-    $idxKeys = [];
-    foreach ($old as $c => $list) { foreach ($list as $im) { $idxKeys[$im['path']] = true; } }
-    $idxKeys = array_keys($idxKeys);
-
-    // 需要处理 = 向量库新增/变更（向量库行有 size/mtime，但索引只存了 path；简化：全量差集）
-    // 增量策略：向量库有而索引没有的 → 重新分类；索引有而向量库没有的 → 删除
-    $need = array_diff($vecKeys, $idxKeys);
-    $drop = array_diff($idxKeys, $vecKeys);
+    // 增量差集：need=新增/变更；drop=已从向量库消失。旧索引无 keys → 全量重建
+    if (is_array($oldKeys)) {
+        $needKeys = array_values(array_diff($vecKeys, $oldKeys));
+        $dropKeys = array_values(array_diff($oldKeys, $vecKeys));
+    } else {
+        $needKeys = $vecKeys;
+        $dropKeys = [];
+    }
+    $needSet = array_flip($needKeys);
+    $dropSet = array_flip($dropKeys);
 
     // 类别向量（带缓存，只需算一次）
     $catVecs = [];
@@ -496,54 +539,58 @@ function ai_classify_build_index($cfg, $progress = null) {
     }
     if (!$catVecs) return ['error' => '类别文本向量化全部失败（检查向量服务）'];
 
-    $newIdx = [];
+    // 每个类别维护 topK：先保留旧索引里仍有效且无需重算的条目
+    $topK = max(1, (int)$cfg['classify_top']);
+    $bucket = [];  // cat => [['path'=>,'origRel'=>,'size'=>,'score'=>], ...]
     foreach ($cats as $name => $desc) {
         if (!isset($catVecs[$name])) continue;
-        // 已有索引里保留仍有效的图片（未删除、且不是待重分类的）
         $kept = [];
         if (isset($old[$name])) {
             foreach ($old[$name] as $im) {
-                if (in_array($im['path'], $drop, true)) continue;      // 向量库已删
-                if (in_array($im['path'], $need, true)) continue;      // 需要重新分类
+                if (isset($dropSet[$im['path']])) continue;      // 向量库已删
+                if (isset($needSet[$im['path']])) continue;      // 需要重新分类
                 $kept[] = $im;
             }
         }
-        $newIdx[$name] = $kept;
+        $bucket[$name] = $kept;
     }
-    // 对新增/变更图片,每类都算一遍相似度,若进入 topK 则插入
-    if ($need) {
-        $hitsByCat = [];
-        foreach ($cats as $name => $desc) {
-            if (!isset($catVecs[$name])) continue;
-            $cand = [];
-            foreach ($need as $w) {
-                $score = ai_cosine($catVecs[$name], $allVecs[$w]['vec']);
-                $cand[] = ['path' => $w, 'origRel' => $allVecs[$w]['origRel'], 'size' => (int)($allVecs[$w]['size'] ?? 0), 'score' => round($score, 4)];
+
+    // 分批遍历向量库：只对 need 的图计算各分类相似度，插入对应桶并维持 topK
+    $batch = 300;
+    $store->eachBatch($batch, function ($rows) use ($catVecs, $needSet, &$bucket, $topK) {
+        foreach ($rows as $webpRel => $row) {
+            if (!isset($needSet[$webpRel])) continue;
+            foreach ($catVecs as $name => $catVec) {
+                $score = ai_cosine($catVec, $row['vec']);
+                $bucket[$name][] = [
+                    'path' => $webpRel,
+                    'origRel' => $row['origRel'],
+                    'size' => (int)($row['size'] ?? 0),
+                    'score' => round($score, 4),
+                ];
             }
-            usort($cand, function ($a, $b) { return $b['score'] <=> $a['score']; });
-            $topN = array_slice($cand, 0, max(1, (int)$cfg['classify_top']));
-            $hitsByCat[$name] = $topN;
         }
-        // 合并：保留旧的 + 按分数插入新的,再截断到 topK
-        $merge = [];
-        foreach ($cats as $name => $desc) {
-            if (!isset($catVecs[$name])) continue;
-            $merged = $newIdx[$name];
-            foreach (($hitsByCat[$name] ?? []) as $h) $merged[] = $h;
-            usort($merged, function ($a, $b) { return $b['score'] <=> $a['score']; });
-            $newIdx[$name] = array_slice($merged, 0, max(1, (int)$cfg['classify_top']));
-        }
+    });
+
+    // 每个类别：排序取 topK
+    $newIdx = [];
+    foreach ($cats as $name => $desc) {
+        if (!isset($catVecs[$name])) continue;
+        $list = $bucket[$name] ?? [];
+        usort($list, function ($a, $b) { return $b['score'] <=> $a['score']; });
+        $newIdx[$name] = array_slice($list, 0, $topK);
     }
 
     $idx = [
         'timestamp' => time(),
         'mode' => 'cache',
-        'top' => max(1, (int)$cfg['classify_top']),
+        'top' => $topK,
+        'keys' => $vecKeys,   // 完整 key 集合，供下次增量 diff
         'categories' => $newIdx,
     ];
     @file_put_contents($idxFile, json_encode($idx, JSON_UNESCAPED_UNICODE));
 
-    return ['ok' => true, 'categories' => count($cats), 'images' => count($vecKeys), 'added' => count($need), 'removed' => count($drop)];
+    return ['ok' => true, 'categories' => count($cats), 'images' => count($vecKeys), 'added' => count($needKeys), 'removed' => count($dropKeys)];
 }
 
 /** 按当前模式查询某分类（realtime=实时 / cache=读索引） */
